@@ -2,7 +2,12 @@
 # CITIZEN CONNECT - CONFIGURATION
 # ==========================================
 
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # ==========================================
@@ -16,7 +21,8 @@ BASE_DIR = Path(__file__).resolve().parent
 # DATABASE
 # ==========================================
 
-DATABASE_URL = (
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
     f"sqlite:///{BASE_DIR / 'citizen_connect.db'}"
 )
 

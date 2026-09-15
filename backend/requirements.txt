@@ -3,3 +3,9 @@ uvicorn
 sqlalchemy
 pydantic
 email-validator
+python-multipart
+google-genai
+Pillow
+python-dotenv
+ImageHash
+psycopg2-binary
