@@ -1,15 +1,23 @@
 services:
   - type: web
     name: citizen-connect-api
-    env: python
+    runtime: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
       - key: DATABASE_URL
         sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: CORS_ORIGINS
+        sync: false
+      - key: AUTHORITY_NAME
+        sync: false
+      - key: AUTHORITY_EMAIL
+        sync: false
+      - key: AUTHORITY_PASSWORD
         sync: false

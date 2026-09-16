@@ -1,8 +1,10 @@
 .venv/
+.venv-windows/
 __pycache__/
 *.py[cod]
 .env
 backend/.env
+backend/authority_credentials.txt
 *.db
 *.sqlite3
 uploads/
