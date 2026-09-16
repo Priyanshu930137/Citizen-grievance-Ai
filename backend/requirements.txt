@@ -9,3 +9,10 @@ Pillow
 python-dotenv
 ImageHash
 psycopg2-binary
+fastapi
+uvicorn
+sqlalchemy
+python-dotenv
+Pillow
+ImageHash
+google-genai
