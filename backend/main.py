@@ -4,6 +4,8 @@
 
 from pathlib import Path
 from collections import Counter
+from difflib import SequenceMatcher
+import json
 
 from fastapi import (
     FastAPI,
@@ -18,8 +20,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 
-from config import CORS_ORIGINS
+from PIL import Image
+import imagehash
+
+from config import CORS_ORIGINS, AUTHORITY_CREDENTIALS_FILE
 
 from database import (
     engine,
@@ -40,11 +46,6 @@ print("AI FUNCTION:", analyze_grievance)
 # ==========================================
 # CREATE DATABASE TABLES
 # ==========================================
-
-Base.metadata.create_all(
-    bind=engine
-)
-
 
 # ==========================================
 # CREATE FASTAPI APPLICATION
@@ -127,6 +128,151 @@ ALLOWED_ROLES = [
 
 
 # ==========================================
+# AUTHORITY BOOTSTRAP
+# ==========================================
+
+def load_authority_credentials():
+    """Read the single authority account from a simple key=value text file."""
+    if not AUTHORITY_CREDENTIALS_FILE.exists():
+        raise RuntimeError(
+            "Authority credentials file is missing: "
+            f"{AUTHORITY_CREDENTIALS_FILE}"
+        )
+
+    credentials = {}
+    for line in AUTHORITY_CREDENTIALS_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise RuntimeError("Invalid authority credentials file format.")
+        key, value = line.split("=", 1)
+        credentials[key.strip()] = value.strip()
+
+    required_keys = {"name", "email", "password"}
+    if not required_keys.issubset(credentials):
+        raise RuntimeError(
+            "Authority credentials file must contain name, email, and password."
+        )
+    return credentials
+
+
+def ensure_authority_account():
+    """Create or refresh the only authority account from the credentials file."""
+    credentials = load_authority_credentials()
+    db = next(get_db())
+    try:
+        authority = db.query(models.User).filter(
+            models.User.email == credentials["email"]
+        ).first()
+
+        if authority:
+            authority.name = credentials["name"]
+            authority.password = credentials["password"]
+            authority.role = "authority"
+            authority.department = None
+        else:
+            db.add(models.User(
+                name=credentials["name"],
+                email=credentials["email"],
+                password=credentials["password"],
+                role="authority"
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def is_configured_authority(user):
+    """Only the account in the credentials file has authority privileges."""
+    credentials = load_authority_credentials()
+    return user.role == "authority" and user.email == credentials["email"]
+
+
+def ensure_grievance_columns():
+    """Add duplicate/evidence fields to existing SQLite databases safely."""
+    existing_columns = {
+        column["name"] for column in inspect(engine).get_columns("grievances")
+    }
+    columns = {
+        "image_hash": "VARCHAR(64)",
+        "image_metadata": "TEXT",
+        "parent_grievance_id": "INTEGER",
+        "is_duplicate": "INTEGER NOT NULL DEFAULT 0",
+        "duplicate_confidence": "INTEGER",
+        "report_count": "INTEGER NOT NULL DEFAULT 1",
+        "verification_status": "VARCHAR(50) NOT NULL DEFAULT 'Pending Review'",
+        "verification_notes": "TEXT"
+    }
+    with engine.begin() as connection:
+        for name, definition in columns.items():
+            if name not in existing_columns:
+                connection.execute(text(
+                    f"ALTER TABLE grievances ADD COLUMN {name} {definition}"
+                ))
+
+
+def normalize_text(value):
+    return " ".join((value or "").lower().split())
+
+
+def get_image_evidence(image_path):
+    """Return a perceptual hash and non-conclusive metadata review notes."""
+    if not image_path:
+        return None, None, []
+
+    try:
+        with Image.open(image_path) as image_file:
+            image_hash = str(imagehash.phash(image_file))
+            exif = image_file.getexif()
+            metadata = {
+                str(key): str(value)
+                for key, value in exif.items()
+                if str(value).strip()
+            }
+    except Exception:
+        return None, None, ["The uploaded file could not be verified as a readable image."]
+
+    flags = []
+    if not metadata:
+        flags.append("No camera metadata was present; this alone does not prove the image is false.")
+    return image_hash, json.dumps(metadata), flags
+
+
+def find_probable_duplicate(db, subject, description, location, image_hash):
+    """Find an open primary grievance with matching area and evidence."""
+    candidates = db.query(models.Grievance).filter(
+        models.Grievance.parent_grievance_id.is_(None),
+        ~models.Grievance.status.in_(["Resolved", "Rejected"])
+    ).all()
+
+    new_text = normalize_text(subject + " " + description)
+    new_location = normalize_text(location)
+    best_match = None
+    best_score = 0
+    for candidate in candidates:
+        location_score = SequenceMatcher(
+            None, new_location, normalize_text(candidate.location)
+        ).ratio()
+        text_score = SequenceMatcher(
+            None, new_text, normalize_text(candidate.subject + " " + candidate.description)
+        ).ratio()
+        same_image = bool(image_hash and candidate.image_hash == image_hash)
+        score = 100 if same_image and location_score >= 0.60 else round(
+            (location_score * 40 + text_score * 60) * 100
+        )
+        if location_score >= 0.70 and (same_image or score >= 75) and score > best_score:
+            best_match = candidate
+            best_score = score
+    return best_match, best_score
+
+
+Base.metadata.create_all(bind=engine)
+ensure_grievance_columns()
+ensure_authority_account()
+
+
+# ==========================================
 # API HOME
 # ==========================================
 
@@ -178,56 +324,13 @@ def register_user(
         )
 
 
-    # ======================================
-    # VALIDATE ROLE
-    # ======================================
-
-    if user.role not in ALLOWED_ROLES:
-
+    # Public registration is exclusively for citizens.  Never trust a role
+    # sent by a registration form, even when a client exposes such a field.
+    if user.role != "citizen" or user.department is not None:
         raise HTTPException(
-
-            status_code=400,
-
-            detail="Invalid user role."
-
+            status_code=403,
+            detail="Public registration is available only for citizen accounts."
         )
-
-
-    # ======================================
-    # VALIDATE DEPARTMENT
-    # ======================================
-
-    if user.role in [
-
-        "management",
-
-        "technician"
-
-    ]:
-
-        if not user.department:
-
-            raise HTTPException(
-
-                status_code=400,
-
-                detail=(
-                    "Department is required for "
-                    "management and technician accounts."
-                )
-
-            )
-
-
-        if user.department not in ALLOWED_DEPARTMENTS:
-
-            raise HTTPException(
-
-                status_code=400,
-
-                detail="Invalid department."
-
-            )
 
 
     # ======================================
@@ -242,18 +345,9 @@ def register_user(
 
         password=user.password,
 
-        role=user.role,
+        role="citizen",
 
-        department=(
-            user.department
-
-            if user.role in [
-                "management",
-                "technician"
-            ]
-
-            else None
-        )
+        department=None
 
     )
 
@@ -284,6 +378,114 @@ def register_user(
 
         }
 
+    }
+
+
+# ==========================================
+# STAFF ACCOUNT PROVISIONING
+# ==========================================
+
+@app.post("/api/staff-accounts")
+def create_staff_account(
+    account: schemas.StaffAccountCreate,
+    db: Session = Depends(get_db)
+):
+    """Allow authority -> management and management -> own-department technician."""
+    account_name = account.name.strip()
+    account_email = str(account.email).lower()
+    creator_email = str(account.creator_email).lower()
+
+    creator = db.query(models.User).filter(
+        models.User.email == creator_email
+    ).first()
+
+    if not creator or creator.password != account.creator_password:
+        raise HTTPException(status_code=401, detail="Invalid creator credentials.")
+
+    if db.query(models.User).filter(models.User.email == account_email).first():
+        raise HTTPException(status_code=400, detail="Email is already registered.")
+
+    if account.role not in {"management", "technician"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Only management and technician accounts can be provisioned."
+        )
+
+    if creator.role == "authority":
+        if not is_configured_authority(creator):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the configured authority account can create management accounts."
+            )
+        if account.role != "management":
+            raise HTTPException(
+                status_code=403,
+                detail="Authority can create management accounts only."
+            )
+        department = account.department
+    elif creator.role == "management":
+        if account.role != "technician":
+            raise HTTPException(
+                status_code=403,
+                detail="Management can create technician accounts only."
+            )
+        if account.department and account.department != creator.department:
+            raise HTTPException(
+                status_code=403,
+                detail="Management can create technicians only in its own department."
+            )
+        department = creator.department
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Only authority and management accounts can create staff accounts."
+        )
+
+    if department not in ALLOWED_DEPARTMENTS:
+        raise HTTPException(status_code=400, detail="A valid department is required.")
+
+    new_user = models.User(
+        name=account_name,
+        email=account_email,
+        password=account.password,
+        role=account.role,
+        department=department
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return {
+        "message": "Staff account created successfully.",
+        "user": {
+            "id": new_user.id,
+            "name": new_user.name,
+            "email": new_user.email,
+            "role": new_user.role,
+            "department": new_user.department
+        }
+    }
+
+
+@app.get("/api/staff-accounts/management")
+def get_management_accounts(db: Session = Depends(get_db)):
+    """Return management accounts for the authority dashboard."""
+    management_accounts = db.query(models.User).filter(
+        models.User.role == "management"
+    ).order_by(models.User.department, models.User.name).all()
+
+    return {
+        "count": len(management_accounts),
+        "accounts": [
+            {
+                "id": account.id,
+                "name": account.name,
+                "email": account.email,
+                "department": account.department,
+                "created_at": account.created_at
+            }
+            for account in management_accounts
+        ]
     }
 
 
@@ -429,19 +631,52 @@ async def create_grievance(
 
         )
     # ======================================
-    # DUPLICATE CHECK
+    # EVIDENCE AND DUPLICATE CHECK
     # ======================================
 
-    duplicate = db.query(models.Grievance).filter(
-        models.Grievance.description == description,
-        models.Grievance.location == location
-        ).first()
-
-    if duplicate:
-      raise HTTPException(
-        status_code=409,
-        detail="This complaint is already registered."
+    image_hash, image_metadata, verification_flags = get_image_evidence(image_path)
+    primary_grievance, confidence = find_probable_duplicate(
+        db, subject, description, location, image_hash
     )
+
+    if primary_grievance:
+        duplicate_report = models.Grievance(
+            citizen_id=citizen_id,
+            citizen_name=citizen_name,
+            email=citizen_email,
+            phone=citizen_phone,
+            subject=subject,
+            description=description,
+            image_url=str(image_path) if image_path else None,
+            image_hash=image_hash,
+            image_metadata=image_metadata,
+            location=location,
+            category=primary_grievance.category,
+            department=primary_grievance.department,
+            priority=primary_grievance.priority,
+            ai_reason="Linked to a similar open grievance.",
+            status=primary_grievance.status,
+            parent_grievance_id=primary_grievance.id,
+            is_duplicate=1,
+            duplicate_confidence=confidence,
+            report_count=1,
+            verification_status="Pending Review",
+            verification_notes=" ".join(verification_flags) or None
+        )
+        primary_grievance.report_count = (primary_grievance.report_count or 1) + 1
+        db.add(duplicate_report)
+        db.commit()
+        db.refresh(duplicate_report)
+
+        return {
+            "message": "Your report was linked to an existing issue.",
+            "grievance_id": duplicate_report.id,
+            "is_duplicate": True,
+            "duplicate_confidence": confidence,
+            "original_grievance_id": primary_grievance.id,
+            "original_status": primary_grievance.status,
+            "report_count": primary_grievance.report_count
+        }
 
     # ======================================
     # AI ANALYSIS
@@ -482,6 +717,10 @@ async def create_grievance(
 
     image_url=str(image_path) if image_path else None,
 
+    image_hash=image_hash,
+
+    image_metadata=image_metadata,
+
     location=location,
 
     category=assessment["category"],
@@ -492,7 +731,17 @@ async def create_grievance(
 
     ai_reason=assessment["reason"],
 
-    status="Pending"
+    status="Pending",
+
+    parent_grievance_id=None,
+
+    is_duplicate=0,
+
+    report_count=1,
+
+    verification_status="Pending Review",
+
+    verification_notes=" ".join(verification_flags) or None
 
 )
 
@@ -1212,6 +1461,36 @@ def update_grievance_priority(
         "priority":
             grievance.priority
 
+    }
+
+
+# ==========================================
+# VERIFY GRIEVANCE EVIDENCE
+# HIGHER AUTHORITY
+# ==========================================
+
+@app.put("/api/grievances/{grievance_id}/verification")
+def update_grievance_verification(
+    grievance_id: int,
+    update: schemas.GrievanceVerificationUpdate,
+    db: Session = Depends(get_db)
+):
+    grievance = db.query(models.Grievance).filter(
+        models.Grievance.id == grievance_id
+    ).first()
+    if not grievance:
+        raise HTTPException(status_code=404, detail="Grievance not found.")
+
+    grievance.verification_status = update.status
+    grievance.verification_notes = update.notes.strip() if update.notes else None
+    db.commit()
+    db.refresh(grievance)
+
+    return {
+        "message": "Evidence verification updated successfully.",
+        "grievance_id": grievance.id,
+        "verification_status": grievance.verification_status,
+        "verification_notes": grievance.verification_notes
     }
 
 

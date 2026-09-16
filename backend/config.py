@@ -43,3 +43,8 @@ CORS_ORIGINS = [
 PROJECT_NAME = "Citizen Connect"
 
 PROJECT_VERSION = "1.0.0"
+
+
+# The authority account is intentionally kept outside the database seed code so
+# its credentials can be changed without editing application logic.
+AUTHORITY_CREDENTIALS_FILE = BASE_DIR / "authority_credentials.txt"

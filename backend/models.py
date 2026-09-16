@@ -168,6 +168,16 @@ class Grievance(Base):
     nullable=True
 )
 
+    # Evidence and duplicate-report tracking.
+    image_hash = Column(String(64), nullable=True, index=True)
+    image_metadata = Column(Text, nullable=True)
+    parent_grievance_id = Column(Integer, nullable=True, index=True)
+    is_duplicate = Column(Integer, nullable=False, default=0)
+    duplicate_confidence = Column(Integer, nullable=True)
+    report_count = Column(Integer, nullable=False, default=1)
+    verification_status = Column(String(50), nullable=False, default="Pending Review")
+    verification_notes = Column(Text, nullable=True)
+
     location = Column(
         String(255),
         nullable=False
