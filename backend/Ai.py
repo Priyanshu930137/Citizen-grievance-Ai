@@ -66,7 +66,7 @@ def analyze_grievance(subject, description, image_path, location):
       "summary":""
     }}
     """
-    
+    #me here 
     contents = [prompt, img] if img else prompt
     
     response = get_gemini_client().models.generate_content(
