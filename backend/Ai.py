@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from difflib import SequenceMatcher
-import ImageHash  # Capitalized as imported
+import imagehash   # Capitalized as imported
 from PIL import Image
 from dotenv import load_dotenv
 from google import genai
@@ -32,7 +32,7 @@ def get_gemini_client():
 
 def check_duplicate(text, img, location):
     # Calculate image hash only if an image is actually provided
-    new_hash = str(ImageHash.average_hash(img)) if img else None
+    new_hash = str(imagehash.average_hash(img)) if img else None
     
     for item in complaints_db:
         score = SequenceMatcher(None, text.lower(), item["text"].lower()).ratio()
@@ -66,7 +66,7 @@ def analyze_grievance(subject, description, image_path, location):
       "summary":""
     }}
     """
-    
+    #me here 
     contents = [prompt, img] if img else prompt
     
     response = get_gemini_client().models.generate_content(
@@ -91,4 +91,4 @@ def analyze_grievance(subject, description, image_path, location):
         "department": result.get("department", "Unassigned"),
         "reason": result.get("summary", "")
     }
-
+#last line here
