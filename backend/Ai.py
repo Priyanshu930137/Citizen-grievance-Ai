@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from difflib import SequenceMatcher
-import imagehash   # Capitalized as imported
+import imagehash
 from PIL import Image
 from dotenv import load_dotenv
 from google import genai
@@ -26,6 +26,9 @@ def get_gemini_client():
             "GEMINI_API_KEY is not configured. Add it to backend/.env "
             "before submitting AI-analyzed grievances."
         )
+
+
+
     
     client = genai.Client(api_key=api_key)
     return client
@@ -70,7 +73,7 @@ def analyze_grievance(subject, description, image_path, location):
     contents = [prompt, img] if img else prompt
     
     response = get_gemini_client().models.generate_content(
-        model="gemini-2.5-flash",  # Updated to standard stable model syntax
+        model="gemini-2.5-flash",
         contents=contents,
         config={"response_mime_type": "application/json"}
     )
