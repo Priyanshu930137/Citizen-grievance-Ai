@@ -2,7 +2,7 @@ from google import genai
 from PIL import Image
 from dotenv import load_dotenv
 from difflib import SequenceMatcher
-import ImageHash
+#import ImageHash
 import os
 import json
 import uuid
