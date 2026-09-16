@@ -91,3 +91,4 @@ def analyze_grievance(subject, description, image_path, location):
         "department": result.get("department", "Unassigned"),
         "reason": result.get("summary", "")
     }
+#last line here
