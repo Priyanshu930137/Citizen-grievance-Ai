@@ -6,6 +6,7 @@ from pathlib import Path
 from collections import Counter
 from difflib import SequenceMatcher
 import json
+import os
 import uuid
 
 from fastapi import (
@@ -133,14 +134,26 @@ ALLOWED_ROLES = [
 
 def load_authority_credentials():
     """
-    Read the authority account from the credentials file.
+    Read the authority account from a local credentials file or environment.
     """
 
     if not AUTHORITY_CREDENTIALS_FILE.exists():
-        raise RuntimeError(
-            "Authority credentials file is missing: "
-            f"{AUTHORITY_CREDENTIALS_FILE}"
-        )
+        credentials = {
+            "name": os.getenv("AUTHORITY_NAME", "").strip(),
+            "email": os.getenv("AUTHORITY_EMAIL", "").strip(),
+            "password": os.getenv("AUTHORITY_PASSWORD", ""),
+        }
+
+        required_keys = {"name", "email", "password"}
+
+        if not all(credentials[key] for key in required_keys):
+            raise RuntimeError(
+                "Authority credentials are missing. Set AUTHORITY_NAME, "
+                "AUTHORITY_EMAIL, and AUTHORITY_PASSWORD in Render, or add "
+                "backend/authority_credentials.txt for local development."
+            )
+
+        return credentials
 
     credentials = {}
 
