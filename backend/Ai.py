@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from difflib import SequenceMatcher
-import imagehash   # Capitalized as imported
+import imagehash
 from PIL import Image
 from dotenv import load_dotenv
 from google import genai
@@ -66,16 +66,33 @@ def analyze_grievance(subject, description, image_path, location):
       "summary":""
     }}
     """
-    #me here 
+    
     contents = [prompt, img] if img else prompt
     
     response = get_gemini_client().models.generate_content(
-        model="gemini-2.5-flash",  # Updated to standard stable model syntax
+        model="gemini-2.5-flash",
         contents=contents,
         config={"response_mime_type": "application/json"}
     )
     
-    result = json.loads(response.text)
+    # Clean text to strip out stray markdown fences like ```json
+    clean_text = response.text.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+    clean_text = clean_text.strip()
+    
+    try:
+        result = json.loads(clean_text)
+    except json.JSONDecodeError:
+        # Secure safety fallback if response is empty or corrupt
+        result = {
+            "category": "General",
+            "priority": "Medium",
+            "department": "Unassigned",
+            "summary": "AI processing error"
+        }
     
     # Keyword override for priority
     urgent_words = ["accident", "fire", "electric shock", "flood", "emergency", "collapse"]
@@ -91,4 +108,3 @@ def analyze_grievance(subject, description, image_path, location):
         "department": result.get("department", "Unassigned"),
         "reason": result.get("summary", "")
     }
-#last line here
